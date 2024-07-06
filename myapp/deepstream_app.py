@@ -1,21 +1,22 @@
 import sys
+sys.path.append('../')
 import platform
 import configparser
+
 import gi
-
-sys.path.append('../')
-
 gi.require_version('Gst', '1.0')
-from gi.repository import GObject, Gst
-from common.is_aarch_64 import is_aarch64
+from gi.repository import GLib, Gst
+from common.platform_info import PlatformInfo
 from common.bus_call import bus_call
-import pyds
 
+import pyds
 
 PGIE_CLASS_ID_VEHICLE = 0
 PGIE_CLASS_ID_BICYCLE = 1
 PGIE_CLASS_ID_PERSON = 2
 PGIE_CLASS_ID_ROADSIGN = 3
+MUXER_BATCH_TIMEOUT_USEC = 33000
+MAX_NUM_SOURCES = 4  # Define the maximum number of input sources
 
 def osd_sink_pad_buffer_probe(pad, info, u_data):
     frame_number = 0
@@ -28,7 +29,7 @@ def osd_sink_pad_buffer_probe(pad, info, u_data):
     num_rects = 0
     gst_buffer = info.get_buffer()
     if not gst_buffer:
-        print("Unable to get GstBuffer ")
+        print("Unable to get GstBuffer")
         return
 
     batch_meta = pyds.gst_buffer_get_nvds_batch_meta(hash(gst_buffer))
@@ -71,62 +72,30 @@ def osd_sink_pad_buffer_probe(pad, info, u_data):
             l_frame = l_frame.next
         except StopIteration:
             break
+
     return Gst.PadProbeReturn.OK
 
 def main(args):
     if len(args) < 2:
-        sys.stderr.write("usage: %s <media file or uri> [<media file or uri> ...]\n" % args[0])
+        sys.stderr.write("usage: %s <uri1> [<uri2> ... <uriN>]\n" % args[0])
         sys.exit(1)
 
-    GObject.threads_init()
+    number_sources = len(args) - 1
+    if number_sources > MAX_NUM_SOURCES:
+        print(f"Warning: Number of sources greater than {MAX_NUM_SOURCES}. Limiting to {MAX_NUM_SOURCES}.")
+        number_sources = MAX_NUM_SOURCES
+
+    platform_info = PlatformInfo()
     Gst.init(None)
 
-    print("Creating Pipeline \n")
+    print("Creating Pipeline \n ")
     pipeline = Gst.Pipeline()
-
     if not pipeline:
         sys.stderr.write(" Unable to create Pipeline \n")
 
-    print("Creating nvstreammux \n")
     streammux = Gst.ElementFactory.make("nvstreammux", "Stream-muxer")
     if not streammux:
         sys.stderr.write(" Unable to create NvStreamMux \n")
-
-    pipeline.add(streammux)
-
-    sources = []
-    for i, source_uri in enumerate(args[1:]):
-        source = Gst.ElementFactory.make("filesrc", "file-source-%d" % i)
-        if not source:
-            sys.stderr.write(" Unable to create Source %d \n" % i)
-        source.set_property('location', source_uri)
-        h264parser = Gst.ElementFactory.make("h264parse", "h264-parser-%d" % i)
-        if not h264parser:
-            sys.stderr.write(" Unable to create h264 parser %d \n" % i)
-        decoder = Gst.ElementFactory.make("nvv4l2decoder", "nvv4l2-decoder-%d" % i)
-        if not decoder:
-            sys.stderr.write(" Unable to create Nvv4l2 Decoder %d \n" % i)
-        
-        pipeline.add(source)
-        pipeline.add(h264parser)
-        pipeline.add(decoder)
-
-        source.link(h264parser)
-        h264parser.link(decoder)
-
-        sinkpad = streammux.get_request_pad("sink_%u" % i)
-        if not sinkpad:
-            sys.stderr.write(" Unable to get the sink pad of streammux \n")
-        srcpad = decoder.get_static_pad("src")
-        if not srcpad:
-            sys.stderr.write(" Unable to get source pad of decoder \n")
-        srcpad.link(sinkpad)
-        sources.append(source)
-
-    streammux.set_property('width', 1920)
-    streammux.set_property('height', 1080)
-    streammux.set_property('batch-size', len(sources))
-    streammux.set_property('batched-push-timeout', 4000000)
 
     pgie = Gst.ElementFactory.make("nvinfer", "primary-inference")
     if not pgie:
@@ -144,10 +113,6 @@ def main(args):
     if not sgie2:
         sys.stderr.write(" Unable to make sgie2 \n")
 
-    sgie3 = Gst.ElementFactory.make("nvinfer", "secondary3-nvinference-engine")
-    if not sgie3:
-        sys.stderr.write(" Unable to make sgie3 \n")
-
     nvvidconv = Gst.ElementFactory.make("nvvideoconvert", "convertor")
     if not nvvidconv:
         sys.stderr.write(" Unable to create nvvidconv \n")
@@ -156,20 +121,32 @@ def main(args):
     if not nvosd:
         sys.stderr.write(" Unable to create nvosd \n")
 
-    if is_aarch64():
-        transform = Gst.ElementFactory.make("nvegltransform", "nvegl-transform")
+    if platform_info.is_integrated_gpu():
+        print("Creating nv3dsink \n")
+        sink = Gst.ElementFactory.make("nv3dsink", "nv3d-sink")
+        if not sink:
+            sys.stderr.write(" Unable to create nv3dsink \n")
+    else:
+        if platform_info.is_platform_aarch64():
+            print("Creating nv3dsink \n")
+            sink = Gst.ElementFactory.make("nv3dsink", "nv3d-sink")
+        else:
+            print("Creating EGLSink \n")
+            sink = Gst.ElementFactory.make("nveglglessink", "nvvideo-renderer")
+        if not sink:
+            sys.stderr.write(" Unable to create egl sink \n")
 
-    sink = Gst.ElementFactory.make("nveglglessink", "nvvideo-renderer")
-    if not sink:
-        sys.stderr.write(" Unable to create egl sink \n")
+    streammux.set_property('width', 1920)
+    streammux.set_property('height', 1080)
+    streammux.set_property('batch-size', number_sources)
+    streammux.set_property('batched-push-timeout', MUXER_BATCH_TIMEOUT_USEC)
 
-    pgie.set_property('config-file-path', "pgie_config.txt")
-    sgie1.set_property('config-file-path', "sgie1_config.txt")
-    sgie2.set_property('config-file-path', "sgie2_config.txt")
-    sgie3.set_property('config-file-path', "sgie3_config.txt")
+    pgie.set_property('config-file-path', "dstest2_pgie_config.txt")
+    sgie1.set_property('config-file-path', "dstest2_sgie1_config.txt")
+    sgie2.set_property('config-file-path', "dstest2_sgie2_config.txt")
 
     config = configparser.ConfigParser()
-    config.read('tracker_config.txt')
+    config.read('dstest2_tracker_config.txt')
     config.sections()
 
     for key in config['tracker']:
@@ -188,37 +165,37 @@ def main(args):
         if key == 'll-config-file':
             tracker_ll_config_file = config.get('tracker', key)
             tracker.set_property('ll-config-file', tracker_ll_config_file)
-        if key == 'enable-batch-process':
-            tracker_enable_batch_process = config.getint('tracker', key)
-            tracker.set_property('enable_batch_process', tracker_enable_batch_process)
 
     print("Adding elements to Pipeline \n")
+    pipeline.add(streammux)
     pipeline.add(pgie)
     pipeline.add(tracker)
     pipeline.add(sgie1)
     pipeline.add(sgie2)
-    pipeline.add(sgie3)
     pipeline.add(nvvidconv)
     pipeline.add(nvosd)
     pipeline.add(sink)
-    if is_aarch64():
-        pipeline.add(transform)
+
+    for i in range(number_sources):
+        uri = args[i + 1]
+        source_bin = create_source_bin(i, uri)
+        pipeline.add(source_bin)
+
+        padname = f"sink_{i}"
+        sinkpad = streammux.get_request_pad(padname)
+        srcpad = source_bin.get_static_pad("src")
+        srcpad.link(sinkpad)
 
     print("Linking elements in the Pipeline \n")
     streammux.link(pgie)
     pgie.link(tracker)
     tracker.link(sgie1)
     sgie1.link(sgie2)
-    sgie2.link(sgie3)
-    sgie3.link(nvvidconv)
+    sgie2.link(nvvidconv)
     nvvidconv.link(nvosd)
-    if is_aarch64():
-        nvosd.link(transform)
-        transform.link(sink)
-    else:
-        nvosd.link(sink)
+    nvosd.link(sink)
 
-    loop = GObject.MainLoop()
+    loop = GLib.MainLoop()
     bus = pipeline.get_bus()
     bus.add_signal_watch()
     bus.connect("message", bus_call, loop)
@@ -237,6 +214,29 @@ def main(args):
 
     pipeline.set_state(Gst.State.NULL)
 
+def create_source_bin(index, uri):
+    bin_name = f"source-bin-{index}"
+    nbin = Gst.Bin.new(bin_name)
+    uri_decode_bin = Gst.ElementFactory.make("uridecodebin", f"uri-decode-bin-{index}")
+    uri_decode_bin.set_property("uri", uri)
+    uri_decode_bin.connect("pad-added", decodebin_child_added, nbin)
+    Gst.Bin.add(nbin, uri_decode_bin)
+
+    bin_pad = nbin.add_pad(Gst.GhostPad.new_no_target("src", Gst.PadDirection.SRC))
+    if not bin_pad:
+        sys.stderr.write("Failed to add ghost pad in source bin \n")
+        sys.exit(1)
+    return nbin
+
+def decodebin_child_added(child_proxy, obj, name, user_data):
+    if obj.get_factory().get_name().find("decodebin") != -1:
+        obj.connect("pad-added", decodebin_child_added, user_data)
+    else:
+        bin = user_data
+        pad = obj.get_static_pad("src")
+        ghost_pad = bin.get_static_pad("src")
+        if not ghost_pad.set_target(pad):
+            sys.stderr.write("Failed to link decoder src pad to source bin ghost pad\n")
+
 if __name__ == '__main__':
     sys.exit(main(sys.argv))
-
