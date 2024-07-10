@@ -1,0 +1,10 @@
+numpy
+opencv-python
+pyds
+openvino-dev
+gobject-introspection
+pipreqs
+networkx
+defusedxml
+openvino-telemetry
+packaging

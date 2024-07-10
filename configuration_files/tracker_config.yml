@@ -1,0 +1,44 @@
+%YAML:1.0
+  
+NvDCF:
+  useColorNames: 1     
+  useHog: 1          
+  useHighPrecisionFeature: 0   
+  useUniqueID: 1   
+
+  maxTargetsPerStream: 99 
+
+  filterLr: 0.075 
+  gaussianSigma: 0.75 
+
+  minDetectorConfidence: 0.0 
+  minTrackerConfidence: 0.9 
+  minTargetBboxSize: 3       
+  featureImgSizeLevel: 2 
+  SearchRegionPaddingScale: 1 
+
+  maxShadowTrackingAge: 50       
+  probationAge: 3              
+  earlyTerminationAge: 3         
+
+
+  minMatchingScore4Overall: 0.3
+  minMatchingScore4Motion: 0.3
+  minMatchingScore4Iou: 0.1 
+  minMatchingScore4VisualSimilarity: 0.2
+  minTrackingConfidenceDuringInactive: 0.9
+
+  matchingScoreWeight4VisualSimilarity: 0.9  
+  matchingScoreWeight4Motion: 0.0            
+  matchingScoreWeight4Iou: 0.1               
+  matchingScoreWeight4Age: 0.2              
+
+  minDetectorBboxVisibilityTobeTracked: 0.0 
+  minVisibiilty4Tracking: 0.0 
+
+  bboxPaddingScaleForAssociation: 0.0 
+  visibilityRoiFactor: 0.00      
+
+  trackExponentialSmoothingLr_loc: 0.5      
+  trackExponentialSmoothingLr_scale: 0.3   
+  trackExponentialSmoothingLr_velocity: 0.05 
